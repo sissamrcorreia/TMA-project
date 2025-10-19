@@ -1,10 +1,9 @@
-
 # Decentralized Flow Monitoring System for PC-Based Networks
 
-* src/ebpf: For eBPF kernel programs (C code).
-* src/userspace: For Python code that loads eBPF programs and processes data.
-* tests: For unit tests and virtual testbeds (e.g., Docker later).
-* docs: For notes, diagrams, or research papers.
+* ``src/ebpf``: For eBPF kernel programs (C code).
+* ``src/userspace``: For Python code that loads eBPF programs and processes data.
+* ``tests``: For unit tests and virtual testbeds (e.g., Docker later).
+* ``docs``: For notes, diagrams, or research papers.
 
 ## **Background:**
 
@@ -37,4 +36,10 @@ The system must be designed to:
 * Data Processing & Visualization: Lightweight central viewer (Flask/Django web app, Grafana dashboard).
 * Testing & Evaluation: Virtual testbeds (Docker, Mininet, or local VMs) or performance benchmarks (Linux perf, htop, sar).
 
-**
+## Authors
+* Anna Melkumyan
+* Cecília Maria Rodrigues Correia
+* Eric Eugenio de Haro
+* Oriol Ramos Puig
+* Miquel Romeo 
+* Sofian Aoulad
