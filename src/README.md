@@ -1,0 +1,194 @@
+# Decentralized Flow Monitoring System
+## Setup and Execution Guide
+
+---
+
+## 📁 Project Structure
+
+Create the following directory structure:
+
+```
+src/
+├── capture/
+│   ├── flow_capture.c          # Already provided
+│   └── Makefile                # Optional
+├── aggregation/
+│   ├── __init__.py             # Empty file
+│   ├── cms_aggregator.py       # Count-Min Sketch
+│   ├── hll_aggregator.py       # HyperLogLog
+│   └── aggregation_engine.py  # Main engine
+├── output/
+│   └── aggregated_flows/       # Auto-created
+├── requirements.txt
+├── run_agent.sh
+└── README.md
+```
+
+---
+
+## 🔧 Installation
+
+### Step 1: Install System Dependencies
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install libpcap-dev gcc python3 python3-pip
+```
+
+**CentOS/RHEL:**
+```bash
+sudo yum install libpcap-devel gcc python3 python3-pip
+```
+
+**macOS:**
+```bash
+brew install libpcap
+```
+
+### Step 2: Create Project Structure
+
+```bash
+# Create directories
+mkdir -p src/{capture,aggregation,output/aggregated_flows}
+cd src
+
+# Create Python package marker
+touch aggregation/__init__.py
+
+# Copy your files to respective directories
+# - flow_capture.c → capture/
+# - cms_aggregator.py → aggregation/
+# - hll_aggregator.py → aggregation/
+# - aggregation_engine.py → aggregation/
+# - run_agent.sh → ./
+# - requirements.txt → ./
+```
+
+### Step 3: Make Scripts Executable
+
+```bash
+chmod +x run_agent.sh
+chmod +x aggregation/aggregation_engine.py
+```
+
+### Step 4: Compile Capture Program
+
+```bash
+cd capture
+gcc -o flow_capture flow_capture.c -lpcap
+cd ..
+```
+
+---
+
+## 🚀 Execution
+
+### Option 1: Quick Start (Recommended)
+
+```bash
+# Run with auto-detected interface
+sudo ./run_agent.sh
+
+# Run with specific interface
+sudo ./run_agent.sh eth0
+
+# Custom configuration
+sudo ./run_agent.sh --interface wlan0 --export-interval 30
+```
+
+### Option 2: Manual Execution
+
+```bash
+# Terminal 1: Run capture
+sudo ./capture/flow_capture eth0
+
+# Terminal 2: Pipe to aggregation
+sudo ./capture/flow_capture eth0 | python3 aggregation/aggregation_engine.py
+```
+
+### Option 3: Background Service
+
+```bash
+# Run in background
+sudo nohup ./run_agent.sh eth0 > agent.log 2>&1 &
+
+# Check status
+tail -f agent.log
+
+# Stop
+sudo pkill -f flow_capture
+```
+
+---
+
+## 📊 Understanding the Output
+
+### Live Console Output
+
+Every 60 seconds (default), you'll see:
+
+```
+==============================================================
+LIVE STATISTICS - 14:30:15
+==============================================================
+
+Flows Processed: 1247
+Exports Received: 3
+
+--- Count-Min Sketch ---
+Total Bytes: 15,234,567
+Total Packets: 34,521
+Memory: 81,920 bytes
+
+Top 5 Heavy Hitters (by bytes):
+  192.168.1.10:54321->8.8.8.8:443/TCP: 5,234,890 bytes
+  192.168.1.15:60123->1.1.1.1:443/TCP: 3,456,123 bytes
+  ...
+
+--- HyperLogLog ---
+Unique Source IPs: 45
+Unique Destination IPs: 123
+Unique Flows: 892
+Network Diversity: 18.74%
+
+⚠ Potential Port Scanners Detected:
+  10.0.0.66: 87 unique ports
+
+Total Memory Usage: 245,760 bytes (240.0 KB)
+Compression Ratio: 101.5x
+==============================================================
+```
+
+### JSON Summary Files
+
+Located in `output/aggregated_flows/summary_YYYY-MM-DD_HH-MM-SS.json`:
+
+```json
+{
+  "timestamp": "2025-10-20T14:30:15",
+  "flows_processed": 1247,
+  "cms": {
+    "heavy_hitters_bytes": [
+      {
+        "flow": "192.168.1.10:54321->8.8.8.8:443/TCP",
+        "bytes": 5234890
+      }
+    ]
+  },
+  "hll": {
+    "cardinalities": {
+      "unique_src_ips": 45,
+      "unique_dst_ips": 123
+    },
+    "port_scanners": [
+      {"ip": "10.0.0.66", "unique_ports": 87}
+    ]
+  },
+  "compression_ratio": 101.5
+}
+```
+
+---
+
+##

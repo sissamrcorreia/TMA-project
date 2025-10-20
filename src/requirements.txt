@@ -1,0 +1,11 @@
+# Python dependencies for Flow Aggregation System
+# Install with: pip install -r requirements.txt
+
+# No external dependencies required for basic functionality!
+# Pure Python implementation of CMS and HLL
+
+# Optional: For future enhancements
+# grpcio>=1.50.0          # For P2P communication
+# protobuf>=4.21.0        # Protocol buffers
+# zmq>=24.0.0             # ZeroMQ messaging
+# prometheus-client>=0.15.0  # Metrics export
