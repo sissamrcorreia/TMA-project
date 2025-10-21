@@ -10,17 +10,17 @@ Create the following directory structure:
 ```
 src/
 ├── capture/
-│   ├── flow_capture.c          # Already provided
-│   └── Makefile                # Optional
+│   ├── flow_capture_json.c          # Already provided
 ├── aggregation/
-│   ├── __init__.py             # Empty file
-│   ├── cms_aggregator.py       # Count-Min Sketch
-│   ├── hll_aggregator.py       # HyperLogLog
-│   └── aggregation_engine.py  # Main engine
+│   ├── __init__.py                 # Empty file
+│   ├── cms_aggregator.py           # Count-Min Sketch
+│   ├── hll_aggregator.py           # HyperLogLog
+│   └── file_aggregation_engine.py  # Main engine
 ├── output/
-│   └── aggregated_flows/       # Auto-created
+│   ├── aggregated_flows/           # Auto-created
+|   └── flows/                      # json of the actual flows (auto created)
 ├── requirements.txt
-├── run_agent.sh
+├── run_system.sh
 └── README.md
 ```
 
@@ -46,37 +46,18 @@ sudo yum install libpcap-devel gcc python3 python3-pip
 brew install libpcap
 ```
 
-### Step 2: Create Project Structure
+### Step 2: Make Scripts Executable
 
 ```bash
-# Create directories
-mkdir -p src/{capture,aggregation,output/aggregated_flows}
-cd src
-
-# Create Python package marker
-touch aggregation/__init__.py
-
-# Copy your files to respective directories
-# - flow_capture.c → capture/
-# - cms_aggregator.py → aggregation/
-# - hll_aggregator.py → aggregation/
-# - aggregation_engine.py → aggregation/
-# - run_agent.sh → ./
-# - requirements.txt → ./
+chmod +x run_system.sh
+chmod +x aggregation/file_aggregation_engine.py
 ```
 
-### Step 3: Make Scripts Executable
-
-```bash
-chmod +x run_agent.sh
-chmod +x aggregation/aggregation_engine.py
-```
-
-### Step 4: Compile Capture Program
+### Step 3: Compile Capture Program (done in run_system.sh)
 
 ```bash
 cd capture
-gcc -o flow_capture flow_capture.c -lpcap
+gcc -o flow_capture_json flow_capture_json.c -lpcap
 cd ..
 ```
 
@@ -88,30 +69,20 @@ cd ..
 
 ```bash
 # Run with auto-detected interface
-sudo ./run_agent.sh
+sudo ./run_system.sh
 
 # Run with specific interface
-sudo ./run_agent.sh eth0
+sudo ./run_system.sh eth0
 
 # Custom configuration
-sudo ./run_agent.sh --interface wlan0 --export-interval 30
+sudo ./run_system.sh --interface wlan0 --export-interval 30
 ```
 
-### Option 2: Manual Execution
-
-```bash
-# Terminal 1: Run capture
-sudo ./capture/flow_capture eth0
-
-# Terminal 2: Pipe to aggregation
-sudo ./capture/flow_capture eth0 | python3 aggregation/aggregation_engine.py
-```
-
-### Option 3: Background Service
+### Option 2: Background Service
 
 ```bash
 # Run in background
-sudo nohup ./run_agent.sh eth0 > agent.log 2>&1 &
+sudo nohup ./run_system.sh eth0 > agent.log 2>&1 &
 
 # Check status
 tail -f agent.log
