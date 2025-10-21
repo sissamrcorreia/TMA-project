@@ -10,11 +10,14 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 #define ETHERNET_HEADER_SIZE 14
 #define SNAPLEN 74
 #define FLOW_TABLE_SIZE 10000
-#define EXPORT_INTERVAL 60  // Export flows every 60 seconds
+#define EXPORT_INTERVAL 30  // Export flows every 30 seconds
+#define OUTPUT_DIR "output/flows"
+#define OUTPUT_FILE "output/flows/current_flows.json"
 
 /* Flow key structure (5-tuple) */
 typedef struct {
@@ -42,15 +45,24 @@ time_t last_export_time;
 pcap_t *global_handle = NULL;
 
 /* Function prototypes */
-void export_flows();
+void export_flows_json();
 void signal_handler(int signum);
 int find_or_create_flow(flow_key_t *key);
 void update_flow(int index, uint32_t packet_len, time_t timestamp);
+void create_output_directory();
+
+/* Create output directory if it doesn't exist */
+void create_output_directory() {
+    struct stat st = {0};
+    if (stat(OUTPUT_DIR, &st) == -1) {
+        mkdir(OUTPUT_DIR, 0755);
+    }
+}
 
 /* Signal handler for graceful shutdown */
 void signal_handler(int signum) {
     printf("\nCaught signal %d, exporting flows and exiting...\n", signum);
-    export_flows();
+    export_flows_json();
     if (global_handle) {
         pcap_breakloop(global_handle);
     }
@@ -59,7 +71,6 @@ void signal_handler(int signum) {
 
 /* Find existing flow or create new one */
 int find_or_create_flow(flow_key_t *key) {
-    // Search for existing flow
     for (int i = 0; i < flow_count; i++) {
         if (flow_table[i].active &&
             strcmp(flow_table[i].key.src_ip, key->src_ip) == 0 &&
@@ -71,7 +82,6 @@ int find_or_create_flow(flow_key_t *key) {
         }
     }
     
-    // Create new flow if space available
     if (flow_count < FLOW_TABLE_SIZE) {
         int index = flow_count++;
         memcpy(&flow_table[index].key, key, sizeof(flow_key_t));
@@ -81,7 +91,7 @@ int find_or_create_flow(flow_key_t *key) {
         return index;
     }
     
-    return -1; // Table full
+    return -1;
 }
 
 /* Update flow statistics */
@@ -97,39 +107,61 @@ void update_flow(int index, uint32_t packet_len, time_t timestamp) {
     }
 }
 
-/* Export flows to stdout (later can be sent to aggregation layer) */
-void export_flows() {
-    printf("\n========== FLOW EXPORT ==========\n");
-    fflush(stdout);  // Force flush
-    printf("Timestamp: %ld\n", time(NULL));
-    printf("Active Flows: %d\n", flow_count);
-    printf("=================================\n");
-    fflush(stdout);
+/* Export flows to JSON file */
+void export_flows_json() {
+    FILE *fp;
+    char temp_file[256];
+    time_t current_time = time(NULL);
     
+    // Write to temporary file first (atomic operation)
+    snprintf(temp_file, sizeof(temp_file), "%s.tmp", OUTPUT_FILE);
+    
+    fp = fopen(temp_file, "w");
+    if (fp == NULL) {
+        fprintf(stderr, "Error: Cannot open output file %s\n", temp_file);
+        return;
+    }
+    
+    // Write JSON header
+    fprintf(fp, "{\n");
+    fprintf(fp, "  \"timestamp\": %ld,\n", current_time);
+    fprintf(fp, "  \"flow_count\": %d,\n", flow_count);
+    fprintf(fp, "  \"flows\": [\n");
+    
+    // Write flows
+    int first = 1;
     for (int i = 0; i < flow_count; i++) {
         if (flow_table[i].active && flow_table[i].packet_count > 0) {
-            printf("Flow %d:\n", i);
-            printf("  %s:%u -> %s:%u\n",
-                   flow_table[i].key.src_ip,
-                   flow_table[i].key.src_port,
-                   flow_table[i].key.dst_ip,
-                   flow_table[i].key.dst_port);
-            printf("  Protocol: %s\n", 
-                   flow_table[i].key.protocol == IPPROTO_TCP ? "TCP" : "UDP");
-            printf("  Packets: %lu, Bytes: %lu\n",
-                   flow_table[i].packet_count,
-                   flow_table[i].byte_count);
-            printf("  Duration: %ld seconds\n",
-                   flow_table[i].last_seen - flow_table[i].first_seen);
-            printf("  First seen: %ld, Last seen: %ld\n",
-                   flow_table[i].first_seen,
-                   flow_table[i].last_seen);
-            printf("---\n");
-            fflush(stdout);  // Flush after each flow
+            if (!first) {
+                fprintf(fp, ",\n");
+            }
+            first = 0;
+            
+            fprintf(fp, "    {\n");
+            fprintf(fp, "      \"src_ip\": \"%s\",\n", flow_table[i].key.src_ip);
+            fprintf(fp, "      \"dst_ip\": \"%s\",\n", flow_table[i].key.dst_ip);
+            fprintf(fp, "      \"src_port\": %u,\n", flow_table[i].key.src_port);
+            fprintf(fp, "      \"dst_port\": %u,\n", flow_table[i].key.dst_port);
+            fprintf(fp, "      \"protocol\": \"%s\",\n", 
+                    flow_table[i].key.protocol == IPPROTO_TCP ? "TCP" : "UDP");
+            fprintf(fp, "      \"packet_count\": %lu,\n", flow_table[i].packet_count);
+            fprintf(fp, "      \"byte_count\": %lu,\n", flow_table[i].byte_count);
+            fprintf(fp, "      \"first_seen\": %ld,\n", flow_table[i].first_seen);
+            fprintf(fp, "      \"last_seen\": %ld\n", flow_table[i].last_seen);
+            fprintf(fp, "    }");
         }
     }
-    printf("=================================\n\n");
-    fflush(stdout);  // Final flush
+    
+    // Write JSON footer
+    fprintf(fp, "\n  ]\n");
+    fprintf(fp, "}\n");
+    
+    fclose(fp);
+    
+    // Atomic rename (prevents reading partial files)
+    rename(temp_file, OUTPUT_FILE);
+    
+    printf("[%ld] Exported %d flows to %s\n", current_time, flow_count, OUTPUT_FILE);
     
     // Reset flow table after export
     memset(flow_table, 0, sizeof(flow_table));
@@ -144,52 +176,38 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     struct udphdr *udp_header;
     flow_key_t flow_key;
     int ip_header_len = 0;
-    int is_ipv6 = 0;
     uint8_t protocol;
     
-    // Check if it's time to export flows
     time_t current_time = header->ts.tv_sec;
     if (current_time - last_export_time >= EXPORT_INTERVAL) {
-        export_flows();
+        export_flows_json();
         last_export_time = current_time;
     }
     
-    // Extract Ethernet header
     eth_header = (struct ether_header *)packet;
     u_short ether_type = ntohs(eth_header->ether_type);
     
-    // Parse IP header (IPv4 or IPv6)
     if (ether_type == ETHERTYPE_IP) {
-        // IPv4 packet
-        is_ipv6 = 0;
         ip_header = (struct ip*)(packet + ETHERNET_HEADER_SIZE);
         protocol = ip_header->ip_p;
         
-        // Only process TCP and UDP
         if (protocol != IPPROTO_TCP && protocol != IPPROTO_UDP) {
             return;
         }
         
         ip_header_len = ip_header->ip_hl * 4;
-        
-        // Extract IP addresses
         inet_ntop(AF_INET, &(ip_header->ip_src), flow_key.src_ip, INET6_ADDRSTRLEN);
         inet_ntop(AF_INET, &(ip_header->ip_dst), flow_key.dst_ip, INET6_ADDRSTRLEN);
         
     } else if (ether_type == ETHERTYPE_IPV6) {
-        // IPv6 packet
-        is_ipv6 = 1;
         ip6_header = (struct ip6_hdr*)(packet + ETHERNET_HEADER_SIZE);
         protocol = ip6_header->ip6_nxt;
         
-        // Only process TCP and UDP
         if (protocol != IPPROTO_TCP && protocol != IPPROTO_UDP) {
             return;
         }
         
         ip_header_len = 40;
-        
-        // Extract IP addresses
         inet_ntop(AF_INET6, &(ip6_header->ip6_src), flow_key.src_ip, INET6_ADDRSTRLEN);
         inet_ntop(AF_INET6, &(ip6_header->ip6_dst), flow_key.dst_ip, INET6_ADDRSTRLEN);
         
@@ -199,7 +217,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     
     flow_key.protocol = protocol;
     
-    // Extract port information based on protocol
     if (protocol == IPPROTO_TCP) {
         tcp_header = (struct tcphdr*)(packet + ETHERNET_HEADER_SIZE + ip_header_len);
         flow_key.src_port = ntohs(tcp_header->th_sport);
@@ -210,12 +227,9 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         flow_key.dst_port = ntohs(udp_header->uh_dport);
     }
     
-    // Find or create flow and update statistics
     int flow_index = find_or_create_flow(&flow_key);
     if (flow_index >= 0) {
         update_flow(flow_index, header->len, current_time);
-    } else {
-        fprintf(stderr, "Warning: Flow table full, dropping flow\n");
     }
 }
 
@@ -228,19 +242,13 @@ int main(int argc, char *argv[]) {
     bpf_u_int32 net;
     bpf_u_int32 mask;
     
-    // Disable buffering for immediate output to pipe
-    setbuf(stdout, NULL);
-    setbuf(stderr, NULL);
-    
-    // Setup signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // Initialize flow table
+    create_output_directory();
     memset(flow_table, 0, sizeof(flow_table));
     last_export_time = time(NULL);
     
-    // Find capture device
     if (argc >= 2) {
         device = argv[1];
     } else {
@@ -269,22 +277,18 @@ int main(int argc, char *argv[]) {
         pcap_freealldevs(alldevs);
     }
     
-    printf("Decentralized Flow Monitoring Agent\n");
-    printf("====================================\n");
+    printf("Decentralized Flow Monitoring Agent (JSON Mode)\n");
+    printf("================================================\n");
     printf("Capturing on device: %s\n", device);
-    printf("Filter: %s\n", filter_exp);
     printf("Flow export interval: %d seconds\n", EXPORT_INTERVAL);
-    printf("Supports: IPv4 and IPv6, TCP and UDP\n");
-    printf("====================================\n\n");
+    printf("Output file: %s\n", OUTPUT_FILE);
+    printf("================================================\n\n");
     
-    // Get network info
     if (pcap_lookupnet(device, &net, &mask, error_buffer) == -1) {
-        fprintf(stderr, "Warning: Couldn't get netmask for device %s: %s\n", device, error_buffer);
         net = 0;
         mask = 0;
     }
     
-    // Open capture session
     global_handle = pcap_open_live(device, SNAPLEN, 1, 1000, error_buffer);
     if (global_handle == NULL) {
         fprintf(stderr, "Couldn't open device %s: %s\n", device, error_buffer);
@@ -292,7 +296,6 @@ int main(int argc, char *argv[]) {
         return 2;
     }
     
-    // Compile and apply filter
     if (pcap_compile(global_handle, &fp, filter_exp, 0, net) == -1) {
         fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(global_handle));
         if (argc < 2) free(device);
@@ -305,10 +308,8 @@ int main(int argc, char *argv[]) {
         return 2;
     }
     
-    // Start capturing packets
     pcap_loop(global_handle, 0, packet_handler, NULL);
     
-    // Cleanup
     pcap_freecode(&fp);
     pcap_close(global_handle);
     if (argc < 2) free(device);

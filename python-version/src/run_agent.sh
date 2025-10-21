@@ -127,8 +127,8 @@ trap 'echo -e "\n${YELLOW}Shutting down agent...${NC}"; exit 0' SIGINT SIGTERM
 # Run the pipeline
 if [ -z "$INTERFACE" ]; then
     # Auto-detect interface
-    "$SCRIPT_DIR/capture/flow_capture" 2>&1 | \
-        python3 "$SCRIPT_DIR/aggregation/aggregation_engine.py" \
+    stdbuf -oL "$SCRIPT_DIR/capture/flow_capture" 2>&1 | \
+        python3 -u "$SCRIPT_DIR/aggregation/aggregation_engine.py" \
             --cms-width "$CMS_WIDTH" \
             --cms-depth "$CMS_DEPTH" \
             --hll-precision "$HLL_PRECISION" \
@@ -136,8 +136,8 @@ if [ -z "$INTERFACE" ]; then
             --export-interval "$EXPORT_INTERVAL"
 else
     # Use specified interface
-    "$SCRIPT_DIR/capture/flow_capture" "$INTERFACE" 2>&1 | \
-        python3 "$SCRIPT_DIR/aggregation/aggregation_engine.py" \
+    stdbuf -oL "$SCRIPT_DIR/capture/flow_capture" "$INTERFACE" 2>&1 | \
+        python3 -u "$SCRIPT_DIR/aggregation/aggregation_engine.py" \
             --cms-width "$CMS_WIDTH" \
             --cms-depth "$CMS_DEPTH" \
             --hll-precision "$HLL_PRECISION" \

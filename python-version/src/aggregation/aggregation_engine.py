@@ -38,6 +38,7 @@ class FlowParser:
         for line in lines:
             line = line.strip()
             
+            # Detect start of export block
             if "FLOW EXPORT" in line:
                 in_export = True
                 continue
@@ -45,37 +46,54 @@ class FlowParser:
             if not in_export:
                 continue
             
+            # Detect start of new flow
             if line.startswith("Flow "):
-                # Start of new flow
-                if current_flow:
+                # Save previous flow if exists
+                if current_flow and all(k in current_flow for k in ['src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol', 'packet_count', 'byte_count']):
                     flows.append(current_flow)
                 current_flow = {}
+                continue
             
-            elif "->" in line and ":" in line:
-                # Parse flow line: "192.168.1.1:12345 -> 8.8.8.8:443"
+            # Parse flow line: "  63.140.62.139:443 -> 10.0.2.8:38602"
+            if "->" in line and ":" in line and not line.startswith(("Protocol:", "Packets:", "Duration:", "First")):
+                # Remove leading whitespace and parse
                 match = re.match(r'\s*(.+):(\d+)\s*->\s*(.+):(\d+)', line)
                 if match:
-                    current_flow['src_ip'] = match.group(1)
+                    current_flow['src_ip'] = match.group(1).strip()
                     current_flow['src_port'] = int(match.group(2))
-                    current_flow['dst_ip'] = match.group(3)
+                    current_flow['dst_ip'] = match.group(3).strip()
                     current_flow['dst_port'] = int(match.group(4))
+                continue
             
-            elif line.startswith("Protocol:"):
+            # Parse protocol line: "  Protocol: TCP"
+            if line.startswith("Protocol:"):
                 protocol = line.split(":")[-1].strip()
                 current_flow['protocol'] = protocol
+                continue
             
-            elif line.startswith("Packets:"):
-                # Parse: "Packets: 123, Bytes: 456789"
+            # Parse packets/bytes line: "  Packets: 12, Bytes: 6623"
+            if line.startswith("Packets:"):
                 match = re.search(r'Packets:\s*(\d+),\s*Bytes:\s*(\d+)', line)
                 if match:
                     current_flow['packet_count'] = int(match.group(1))
                     current_flow['byte_count'] = int(match.group(2))
+                continue
             
-            elif line.startswith("===") and current_flow:
-                # End of export block
-                flows.append(current_flow)
-                current_flow = {}
+            # Detect end of flow (line with "---")
+            if line.startswith("---"):
+                if current_flow and all(k in current_flow for k in ['src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol', 'packet_count', 'byte_count']):
+                    flows.append(current_flow)
+                    current_flow = {}
+                continue
+            
+            # Detect end of export block
+            if line.startswith("==="):
+                # Save last flow if exists
+                if current_flow and all(k in current_flow for k in ['src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol', 'packet_count', 'byte_count']):
+                    flows.append(current_flow)
                 in_export = False
+                current_flow = {}
+                break
         
         return flows
 
