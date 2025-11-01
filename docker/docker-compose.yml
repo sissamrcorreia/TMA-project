@@ -1,0 +1,93 @@
+version: "3.9"
+
+networks:
+  tma_net:
+    driver: bridge
+    # ipam opcional si quieres reservar un rango concreto:
+    # ipam:
+    #   config:
+    #     - subnet: 172.28.0.0/16
+
+
+
+
+services:
+  peer1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: tma/peer:latest
+    container_name: tma_peer1
+    networks: [tma_net]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    environment:
+      - INTERFACE=eth0
+      # En el futuro, cuando implementemos envío, aquí podrás definir PEERS=peer2,peer3,... si lo necesitas
+      - TRAFFIC_SEED=1
+      - TRAFFIC_INTERVAL=4
+      - TRAFFIC_JITTER=1.0
+      - TRAFFIC_RATE=3
+      # - TRAFFIC_POOL=https://example.com,https://httpbin.org,8.8.8.8...  asi usa DEFAULT_POOL
+      
+    volumes:
+      - ../data/peer1:/app/src/output
+    # Puertos opcionales para consultar métricas HTTP si luego añades un microservicio
+    # ports:
+    #   - "18081:8080"
+
+  peer2:
+    image: tma/peer:latest
+    container_name: tma_peer2
+    networks: [tma_net]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    environment:
+      - INTERFACE=eth0
+      - TRAFFIC_SEED=2
+      - TRAFFIC_INTERVAL=6
+      - TRAFFIC_JITTER=2.0
+      - TRAFFIC_RATE=4
+    volumes:
+      - ../data/peer2:/app/src/output
+
+  peer3:
+    image: tma/peer:latest
+    container_name: tma_peer3
+    networks: [tma_net]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    environment:
+      - INTERFACE=eth0
+      - TRAFFIC_SEED=3
+      - TRAFFIC_INTERVAL=5
+      - TRAFFIC_JITTER=0.8
+      - TRAFFIC_RATE=2
+    volumes:
+      - ../data/peer3:/app/src/output
+
+  peer4:
+    image: tma/peer:latest
+    container_name: tma_peer4
+    networks: [tma_net]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    environment:
+      - INTERFACE=eth0
+      - TRAFFIC_SEED=4
+      - TRAFFIC_INTERVAL=3
+      - TRAFFIC_JITTER=0.5
+      - TRAFFIC_RATE=1
+    volumes:
+      - ../data/peer4:/app/src/output
+
+  peer5:
+    image: tma/peer:latest
+    container_name: tma_peer5
+    networks: [tma_net]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    environment:
+      - INTERFACE=eth0
+      - TRAFFIC_SEED=5
+      - TRAFFIC_INTERVAL=7
+      - TRAFFIC_JITTER=2.5
+      - TRAFFIC_RATE=5
+    volumes:
+      - ../data/peer5:/app/src/output
+
