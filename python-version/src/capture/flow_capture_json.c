@@ -41,6 +41,7 @@ typedef struct {
 /* Global flow table */
 flow_record_t flow_table[FLOW_TABLE_SIZE];
 int flow_count = 0;
+int warned_table_full = 0; // Flag to prevent console spam
 time_t last_export_time;
 pcap_t *global_handle = NULL;
 
@@ -89,6 +90,12 @@ int find_or_create_flow(flow_key_t *key) {
         flow_table[index].byte_count = 0;
         flow_table[index].active = 1;
         return index;
+    } else {
+        // Warn only once per interval if table is full
+        if (!warned_table_full) {
+            fprintf(stderr, "\n[WARNING] Flow table full (%d flows)! Dropping new flows.\n", FLOW_TABLE_SIZE);
+            warned_table_full = 1;
+        }
     }
     
     return -1;
@@ -163,9 +170,10 @@ void export_flows_json() {
     
     printf("[%ld] Exported %d flows to %s\n", current_time, flow_count, OUTPUT_FILE);
     
-    // Reset flow table after export
+    // Reset flow table and warning flag after export
     memset(flow_table, 0, sizeof(flow_table));
     flow_count = 0;
+    warned_table_full = 0;
 }
 
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
