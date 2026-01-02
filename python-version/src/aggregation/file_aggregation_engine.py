@@ -169,12 +169,16 @@ class FileAggregationEngine:
         filename = f"summary_{timestamp}.json"
         filepath = self.output_dir / filename
         
+        cms_summary = self.cms_aggregator.get_summary()
+        
         summary = {
             'timestamp': datetime.now().isoformat(),
             'runtime_seconds': (datetime.now() - self.start_time).total_seconds(),
             'flows_processed': self.flows_processed,
             'privacy_enabled': self.anonymize,
             'cms': {
+                'total_bytes': cms_summary['total_bytes'],
+                'total_packets': cms_summary['total_packets'],
                 'heavy_hitters_bytes': [
                     {'flow': flow, 'bytes': count} 
                     for flow, count in self.cms_aggregator.get_heavy_hitters(20, 'bytes')
