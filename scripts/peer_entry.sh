@@ -26,7 +26,8 @@ python3 "$AGG_SCRIPT" \
     --input-file "$APP_DIR/output/flows/current_flows.json" \
     --output-dir "$APP_DIR/output/aggregated_flows" \
     --poll-interval 5 \
-    --stats-interval 30 &
+    --stats-interval 30 \
+    --no-privacy &
 PID_AGG=$!
 echo "   PID Aggregation: $PID_AGG"
 
