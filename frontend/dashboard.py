@@ -172,7 +172,7 @@ while True:
                 st.bar_chart(data=df_top, x='flow', y='bytes', color='detected_by')
                 
                 with st.expander("View Raw Flow Data"):
-                    st.dataframe(df_top[['flow', 'bytes', 'detected_by']], use_container_width=True)
+                    st.dataframe(df_top[['flow', 'bytes', 'detected_by']], width='stretch')
             else:
                 st.info("Collecting traffic statistics...")
 
