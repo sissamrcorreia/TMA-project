@@ -2,68 +2,129 @@ import streamlit as st
 import pandas as pd
 import json
 import time
+import glob
 import os
 
 # Page configuration
 st.set_page_config(page_title="Network Traffic Monitor", layout="wide")
+
+# Ruta base donde Docker monta los volúmenes
+BASE_DATA_DIR = "data"
+PEERS = ["peer1", "peer2", "peer3", "peer4", "peer5"]
+
+# --- 2. FUNCIONES DE CARGA ---
+def get_latest_summary(peer_name):
+    """Lee el último JSON generado por el agente Python."""
+    # Path: data/peerX/aggregated_flows/summary_*.json
+    search_path = os.path.join(BASE_DATA_DIR, peer_name, "aggregated_flows", "summary_*.json")
+    files = glob.glob(search_path)
+    if not files:
+        return None
+    
+    # Take most recent one
+    latest_file = max(files, key=os.path.getctime)
+    try:
+        with open(latest_file, 'r') as f:
+            data = json.load(f)
+            data['peer'] = peer_name
+            return data
+    except:
+        return None
+
+def load_data(selected_view):
+    consolidated = {
+        'total_bytes': 0, 'total_packets': 0, 'flow_count': 0,
+        'scanners': [], 'heavy_hitters': []
+    }
+    
+    peers_to_read = PEERS if selected_view == "Global (All Peers)" else [selected_view]
+    
+    active_peers = 0
+    for peer in peers_to_read:
+        data = get_latest_summary(peer)
+        if data:
+            active_peers += 1
+            # Metrics calculated by CMS/HLL
+            consolidated['total_bytes'] += data.get('cms', {}).get('total_bytes', 0)
+            consolidated['total_packets'] += data.get('cms', {}).get('total_packets', 0)
+            consolidated['flow_count'] += data.get('hll', {}).get('cardinalities', {}).get('unique_flows', 0)
+            
+            # Security alerts (HLL)
+            scanners = data.get('hll', {}).get('port_scanners', [])
+            for s in scanners:
+                s['origin_peer'] = peer # Saber quién lo detectó
+                consolidated['scanners'].append(s)
+                
+            # Heavy Hitters (CMS)
+            hh = data.get('cms', {}).get('heavy_hitters_bytes', [])
+            for h in hh:
+                h['detected_by'] = peer
+                consolidated['heavy_hitters'].append(h)
+                
+    return consolidated, active_peers
+
+# --- 3. LATERAL SECTION ---
+st.sidebar.title("🔧 Control Panel")
+view_mode = st.sidebar.selectbox("Select View Source:", ["Global (All Peers)"] + PEERS)
+st.sidebar.markdown("---")
+st.sidebar.caption("Refreshing every 2 seconds...")
+
+# --- 4. PRINCIPAL INTERFACE ---
 st.title("📊 Data Center Traffic Monitor")
-
-# Path to the data file
-DATA_PATH = "../python-version/src/output/flows/current_flows.json"
-
-def load_data():
-    if os.path.exists(DATA_PATH):
-        try:
-            with open(DATA_PATH, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return None
-    return None
 
 # Placeholder for real-time updates
 placeholder = st.empty()
 
 while True:
-    data = load_data()
+    # Load fresh data
+    data, active_count = load_data(view_mode)
     
     with placeholder.container():
-        if data and "flows" in data:
-            df = pd.DataFrame(data['flows'])
-            
-            # ALERT PANEL (DDoS & Scanner Detection)
-            # DDoS: if >3 hosts target the same Victim IP
-            target_counts = df.groupby('dst_ip').src_ip.nunique()
-            ddos_targets = target_counts[target_counts > 3].index.tolist()
-            
-            # Scanner Detection: If one source targets many different IPs
-            scanner_counts = df.groupby('src_ip').dst_ip.nunique()
-            scanners = scanner_counts[scanner_counts > 5].index.tolist()
-
-            if ddos_targets or scanners:
-                if ddos_targets:
-                    st.error(f"🚨 **DDoS ALERT:** Targets detected: {', '.join(ddos_targets)}")
-                if scanners:
-                    st.warning(f"⚠️ **SCANNER DETECTED:** Sources: {', '.join(scanners)}")
+        # A. STATE PANEL
+        if active_count == 0:
+            st.warning("⏳ Waiting for agents... (No data found yet)")
+        else:
+            # B. ALERT PANEL (Based on HLL Scanners)
+            scanners = data['scanners']
+            if scanners:
+                # Format attackers list
+                attacker_ips = list(set([s['ip'] for s in scanners]))
+                st.warning(f"⚠️ **SCANNER DETECTED:** {len(attacker_ips)} IPs are scanning ports: {', '.join(attacker_ips)}")
             else:
                 st.success("✅ **Network Status:** Healthy (No anomalies detected)")
 
-            # KEY METRICS
+            # C. KEY METRICS (Based on CMS Totals)
             col1, col2, col3 = st.columns(3)
-            col1.metric("Active Flows", data.get('flow_count', 0))
-            col2.metric("Total Packets", int(df['packet_count'].sum()))
-            col3.metric("Throughput (Bytes)", f"{df['byte_count'].sum():,}")
+            col1.metric("Active Flows (Approx)", data['flow_count'])
+            col2.metric("Total Packets", f"{data['total_packets']:,}")
+            
+            # Format bytes
+            bytes_val = data['total_bytes']
+            if bytes_val > 1024**3:
+                bytes_str = f"{bytes_val/1024**3:.2f} GB"
+            else:
+                bytes_str = f"{bytes_val/1024**2:.2f} MB"
+            col3.metric("Throughput", bytes_str)
 
-            # VISUALIZATIONS
-            st.subheader("Top 5 Bandwidth Consumers (Heavy Hitters)")
-            # Grouping by Source IP to find Heavy Hitters
-            top_senders = df.groupby('src_ip')['byte_count'].sum().sort_values(ascending=False).head(5)
-            st.bar_chart(top_senders)
-
-            # Detailed Traffic Table
-            with st.expander("View Raw Flow Data"):
-                st.dataframe(df[['src_ip', 'dst_ip', 'protocol', 'packet_count', 'byte_count']])
-        else:
-            st.info("Waiting for incoming traffic data from the Aggregator...")
+            # D. VISUALIZATIONS (Based on CMS Heavy Hitters)
+            st.subheader("🏆 Top Bandwidth Consumers (Heavy Hitters)")
+            
+            if data['heavy_hitters']:
+                df_hh = pd.DataFrame(data['heavy_hitters'])
+                # Order globally and take Top 10
+                df_top = df_hh.sort_values('bytes', ascending=False).head(10)
+                
+                # (Flow vs Bytes)
+                st.bar_chart(data=df_top, x='flow', y='bytes', color='detected_by')
+                
+                # E. DETAILED TRAFFIC TABLE
+                with st.expander("View Raw Flow Data"):
+                    st.dataframe(
+                        df_top[['flow', 'bytes', 'detected_by']], 
+                        width='stretch'
+                    )
+            else:
+                st.info("Collecting traffic statistics...")
 
     # Polling interval (1-2 seconds)
     time.sleep(2)
