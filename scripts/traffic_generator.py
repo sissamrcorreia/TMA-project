@@ -12,6 +12,7 @@ TRAFFIC_JITTER: dispersa acciones dentro del intervalo (por defecto 1s).
 TRAFFIC_RATE: tasa (media) de acciones por lote (por defecto 2).
 TRAFFIC_POOL env var o --pool: lista separada por comas de URLs/IPs para probar.
 Logs en /app/src/output/traffic.log.
+AÑADIDO MODO ATACANTE: Si el hostname contiene "peer5", este peer lanzará un ataque DoS simulado contra "peer2".
 =================================================================================================================
 =================================================================================================================
 """
@@ -21,6 +22,7 @@ import time
 import random
 import subprocess
 import argparse
+import socket
 from datetime import datetime
 
 try:
@@ -32,7 +34,6 @@ except Exception:
 DEFAULT_POOL = [
     "https://example.com",
     "https://httpbin.org/get",
-    "https://jsonplaceholder.typicode.com/posts/1",
     "https://www.wikipedia.org",
     "https://www.google.com",
     "https://api.github.com",
@@ -98,10 +99,33 @@ def choose_action(target):
     else:
         return "ping"
 
+def run_attacker_mode():
+    """Simula un ataque Flood hacia peer2."""
+    victim = "tma_peer2" # Nombre del servicio en Docker
+    log(f"⚔️ [ATTACK MODE] Starting DoS attack against {victim}")
+    
+    while True:
+        try:
+            # Simulamos tráfico rápido TCP (Syn Flood simulado a nivel app)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect((victim, 80))
+            s.send(b"GET / HTTP/1.1\r\nHost: victim\r\n\r\n")
+            s.close()
+        except Exception:
+            pass # Ignoramos fallos de conexión, lo importante es generar el intento (paquete SYN)
+        
+        time.sleep(0.1) # Muy rápido (10 peticiones/seg)
+
 def main(pool, interval, jitter, per_second_rate, seed):
+    hostname = os.environ.get("HOSTNAME", "unknown")
+    if "peer5" in hostname:
+        run_attacker_mode() # Peer 5 secuestra el hilo principal y se vuelve atacante
+        return
+
     random.seed(seed)
     pool = list(pool)
-    log(f"Traffic-gen started pool={len(pool)} interval={interval}s jitter={jitter}s rate={per_second_rate} seed={seed}")
+    log(f"Traffic-gen started on {hostname} pool={len(pool)} interval={interval}s rate={per_second_rate}")
 
     try:
         while True:
