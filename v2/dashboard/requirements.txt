@@ -1,0 +1,8 @@
+streamlit
+pandas
+plotly
+numpy
+requests
+prometheus-api-client
+python-socketio
+websocket-client
