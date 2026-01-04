@@ -1,0 +1,137 @@
+services:
+  # -------------------------------------------------------
+  # HOSTS
+  # -------------------------------------------------------
+  
+  host-a:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: host-a
+    hostname: host-a
+    privileged: true
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+    environment:
+      - AGGREGATOR_IP=aggregator
+      - TARGET_HOSTS=host-b,host-c,host-d
+    networks:
+      - zone-a
+      - zone-b
+
+  host-b:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: host-b
+    hostname: host-b
+    privileged: true
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+    environment:
+      - AGGREGATOR_IP=aggregator
+    networks:
+      - zone-a
+
+  host-c:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: host-c
+    hostname: host-c
+    privileged: true
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+    environment:
+      - AGGREGATOR_IP=aggregator
+    networks:
+      - zone-b
+
+  host-d:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: host-d
+    hostname: host-d
+    privileged: true
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+    environment:
+      - AGGREGATOR_IP=aggregator
+    networks:
+      - zone-b
+
+  # -------------------------------------------------------
+  # INFRASTRUCTURE
+  # -------------------------------------------------------
+
+  aggregator:
+    build: ./aggregator
+    container_name: aggregator
+    hostname: aggregator
+    environment:
+      - ALERT_THRESHOLD=5000
+      - PYTHONUNBUFFERED=1
+    networks:
+      - zone-a
+      - zone-b
+
+  dashboard:
+    build: ./dashboard
+    container_name: dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - CONTROLLER_URL=http://host-a:5006
+      - PYTHONUNBUFFERED=1
+    networks:
+      - zone-a
+    depends_on:
+      - prometheus
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./storage/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - zone-a
+    depends_on:
+      - aggregator
+
+  grafana:
+    image: grafana/grafana-oss
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./storage/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./storage/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./storage/grafana/dashboards:/etc/grafana/provisioning/dashboards/json
+    networks:
+      - zone-a
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+
+# -------------------------------------------------------
+# NETWORKS
+# -------------------------------------------------------
+networks:
+  zone-a:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.10.0/24
+  
+  zone-b:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.20.0/24
