@@ -19,6 +19,7 @@ import plotly.express as px
 import plotly.io as pio
 import socketio
 import threading
+import numpy as np
 from collections import deque
 
 # --- Configuration & Setup ---
@@ -90,6 +91,11 @@ class GlobalCache:
         self.last_update = time.time()
         self.connected = False
         self.heavy_hitters = [] # For Trie (Icicle) visualization
+        self.flow_density_history = deque(maxlen=120)   # flows per Mbps
+        self.src_density_history  = deque(maxlen=120)   # src per Mbps
+        self.spray_history        = deque(maxlen=120)   # 1 - top1_share (distribution)
+        self.diversity_history    = deque(maxlen=120)   # diversity_score
+        self.lowslow_score_history = deque(maxlen=120)  # 0-100 score
 
 @st.cache_resource
 def get_cache():
@@ -199,6 +205,35 @@ def control_traffic(action):
     except:
         st.error("Controller Offline")
 
+def safe_quantile(values, q, default=None):
+    vals = [v for v in values if v is not None and np.isfinite(v)]
+    if len(vals) < 10:
+        return default
+    return float(np.quantile(vals, q))
+
+def clamp(x, lo, hi):
+    return max(lo, min(hi, x))
+
+def compute_spray_index(df_trie, topn=20):
+    """
+    spray_index ~ 0 => concentrado (1 prefijo domina)
+    spray_index ~ 1 => distribuido (muchos prefijos similares)
+    """
+    if df_trie is None or df_trie.empty or 'bytes' not in df_trie.columns:
+        return None
+
+    d = df_trie[['prefix', 'bytes']].copy()
+    d = d[d['bytes'] > 0].sort_values('bytes', ascending=False).head(topn)
+    if d.empty:
+        return None
+
+    total = d['bytes'].sum()
+    if total <= 0:
+        return None
+
+    top1_share = float(d['bytes'].iloc[0] / total)
+    return 1.0 - top1_share
+
 # --- UI RENDER LOOP (Back to while True for No-Scroll-Reset) ---
 
 # 1. SIDEBAR (STATIC)
@@ -254,6 +289,12 @@ p_k2 = k2.empty()
 p_k3 = k3.empty()
 p_k4 = k4.empty()
 
+b1, b2, b3, b4 = st.columns(4)
+p_b1 = b1.empty()
+p_b2 = b2.empty()
+p_b3 = b3.empty()
+p_b4 = b4.empty()
+
 st.markdown("---")
 
 # 4. STATIC TABS & PLACEHOLDERS
@@ -300,6 +341,12 @@ with tab3:
     with st.container():
         p_cpu_chart = st.empty()
 
+    st.divider()
+
+    st.subheader("Low-and-Slow Detection Score")
+    with st.container():
+        p_score_chart = st.empty()
+
 with tab4:
     st.subheader("Raw Aggregator Payload")
     st.caption("Live JSON feed from WebSocket (Last received packet)")
@@ -328,6 +375,63 @@ while True:
         mbps = (current_rate * 8) / 1e6
         cache.chart_history.append((time.time(), mbps))
         
+        eps = 0.1  # evita divisiones raras cuando el tráfico es casi 0
+
+        # HLL stats
+        hll_summary = cache.hll_data.get('summary', {})
+        hll_cards = hll_summary.get('cardinalities', {})
+        unique_flows = float(hll_cards.get('unique_flows', 0) or 0)
+        unique_src = float(hll_cards.get('unique_src_ips', 0) or 0)
+        diversity_score = float(hll_summary.get('diversity_score', 0) or 0)
+
+        flows_per_mbps = unique_flows / max(mbps, eps)
+        srcs_per_mbps  = unique_src  / max(mbps, eps)
+
+        cache.flow_density_history.append((time.time(), flows_per_mbps))
+        cache.src_density_history.append((time.time(), srcs_per_mbps))
+        cache.diversity_history.append((time.time(), diversity_score))
+
+        trie_data = cache.heavy_hitters
+        df_trie = pd.DataFrame(trie_data) if trie_data else pd.DataFrame()
+
+        spray_idx = compute_spray_index(df_trie, topn=20)
+        cache.spray_history.append((time.time(), spray_idx if spray_idx is not None else np.nan))
+
+        # --- Online baselines (percentiles) ---
+        fd_vals = [v for _, v in cache.flow_density_history]
+        sd_vals = [v for _, v in cache.src_density_history]
+        sp_vals = [v for _, v in cache.spray_history]
+        dv_vals = [v for _, v in cache.diversity_history]
+
+        fd_p95 = safe_quantile(fd_vals, 0.95, default=None)
+        sd_p95 = safe_quantile(sd_vals, 0.95, default=None)
+        sp_p95 = safe_quantile(sp_vals, 0.95, default=None)
+        dv_p95 = safe_quantile(dv_vals, 0.95, default=None)
+
+        # --- Score (0-100) ---
+        # idea: si densidad alta + spray alto + diversity alto con mbps bajo -> low-and-slow
+        score = 0.0
+
+        if fd_p95 is not None and flows_per_mbps > fd_p95:
+            score += 40.0 * clamp((flows_per_mbps / (fd_p95 + 1e-9)) - 1.0, 0.0, 1.0)
+
+        if sd_p95 is not None and srcs_per_mbps > sd_p95:
+            score += 25.0 * clamp((srcs_per_mbps / (sd_p95 + 1e-9)) - 1.0, 0.0, 1.0)
+
+        if spray_idx is not None and sp_p95 is not None and spray_idx > sp_p95:
+            score += 20.0 * clamp((spray_idx / (sp_p95 + 1e-9)) - 1.0, 0.0, 1.0)
+
+        if dv_p95 is not None and diversity_score > dv_p95:
+            score += 15.0 * clamp((diversity_score / (dv_p95 + 1e-9)) - 1.0, 0.0, 1.0)
+
+        # si el tráfico es alto, esto ya no es "low-and-slow": atenúa un poco
+        if mbps > 200:
+            score *= 0.6
+
+        score = float(clamp(score, 0.0, 100.0))
+        cache.lowslow_score_history.append((time.time(), score))
+
+
         if mbps > 1000:
             p_k1.metric("Live Throughput", f"{mbps/1000:.2f} Gbps", help="Sum of Egress traffic across all agents.")
         else:
@@ -347,6 +451,32 @@ while True:
         # Prep Stats DataFrames
         cms_list = cache.cms_data.get('heavy_hitters_bytes', [])
         df_flows = pd.DataFrame(cms_list)
+
+        flows_display = "< 1" if flows_per_mbps < 1 else f"{flows_per_mbps:,.0f}"
+        srcs_display  = "< 1" if srcs_per_mbps  < 1 else f"{srcs_per_mbps:,.0f}"
+
+        # Behavioral KPIs
+        p_b1.metric("Flows / Mbps", flows_display,
+                    help="Unique flows per Mbps. High values at low traffic may indicate low-rate attacks")
+
+        p_b2.metric("Src IPs / Mbps", srcs_display,
+                    help="Unique source IPs per Mbps. High values at low traffic suggest spray (botnet-like) behavior")
+
+        if spray_idx is None:
+            p_b3.metric("Spray Index", "—")
+        else:
+            p_b3.metric("Spray Index", f"{spray_idx:.2f}", help="1=distributed, 0=concentrated")
+
+        # Score label
+        if score >= 70:
+            label = "🔴 Likely Low-and-Slow Attack"
+        elif score >= 40:
+            label = "🟠 Anomalous Behavior"
+        else:
+            label = "🟢 Normal Traffic Behavior"
+
+        p_b4.metric("Low-and-Slow Score", f"{score:.0f}/100", help=label)
+
         
         # 1. Throughput Chart
         if len(cache.chart_history) > 2:
@@ -387,6 +517,16 @@ while True:
                     yaxis_range=[0, y_limit]
                 )
                 p_cpu_chart.plotly_chart(fig_cpu, use_container_width=True)
+
+                if len(cache.lowslow_score_history) > 5:
+                    df_s = pd.DataFrame(list(cache.lowslow_score_history), columns=['time', 'score'])
+                    df_s['time'] = pd.to_datetime(df_s['time'], unit='s')
+                    fig_s = px.line(df_s, x='time', y='score', template='plotly_dark')
+                    fig_s.update_layout(height=230, margin=dict(t=0, b=0, l=0, r=0), yaxis_title="Score (0-100)", yaxis_range=[0, 100])
+                    p_score_chart.plotly_chart(fig_s, use_container_width=True)
+                else:
+                    p_score_chart.info("Collecting score history...")
+
             else:
                 p_cpu_chart.info("Waiting for CPU metrics...")
         else:
@@ -423,14 +563,10 @@ while True:
             p_hll.info("Waiting for HLL data...")
 
         # --- PHASE 2: SLOW UI UPDATES (NOW INSTANT via Socket) ---
-        trie_data = cache.heavy_hitters
-        
         if cache.connected:
             status_connection_placeholder.caption(f"Conn: 🟢 WebSocket Push | CMS Verified")
         else:
             status_connection_placeholder.error("Conn: 🔴 Disconnected")
-
-        df_trie = pd.DataFrame(trie_data) if trie_data else pd.DataFrame()
 
         # 4. Heavy Hitters Table (Trie View)
         if not df_trie.empty and "prefix" in df_trie.columns:
