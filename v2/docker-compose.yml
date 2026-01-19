@@ -87,6 +87,7 @@ services:
       - PYTHONUNBUFFERED=1
     networks:
       - zone-a
+      - zone-b
     depends_on:
       - prometheus
 

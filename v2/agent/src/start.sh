@@ -5,7 +5,8 @@
 # This script prepares the environment for the eBPF agent. It:
 # 1. Mounts necessary filesystems (debugfs, bpffs)
 # 2. Loads and pins the eBPF program to the Traffic Control (TC) hook
-# 3. Starts the user-space Python agent and background traffic controller
+# 3. Loads and attaches an XDP program for mitigation (manual policy)
+# 4. Starts the user-space Python agent and background traffic controller
 # -----------------------------------------------------------------------------
 
 set -e
@@ -30,6 +31,11 @@ tc qdisc del dev eth0 clsact 2> /dev/null || true
 rm -f /sys/fs/bpf/traffic_metrics_map 2> /dev/null || true
 rm -f /sys/fs/bpf/traffic_prog 2> /dev/null || true
 
+# XDP mitigation cleanup (if any)
+rm -f /sys/fs/bpf/xdp_block_prog 2> /dev/null || true
+rm -f /sys/fs/bpf/blocked_ipv4 2> /dev/null || true
+rm -f /sys/fs/bpf/drops_total 2> /dev/null || true
+
 # 2. Load the program
 # We load the .o file. We pin ALL maps to /sys/fs/bpf so we don't care about internal name matching.
 echo "Running: bpftool prog load /app/src/traffic.bpf.o ..."
@@ -47,7 +53,17 @@ else
     exit 1
 fi
 
-# 3. Attach to TC Egress (ALL Interfaces)
+# 3.1. Load XDP mitigation program (manual blocking via dashboard)
+echo "🚧 Loading XDP mitigation program..."
+
+if bpftool prog load /app/src/xdp_block.bpf.o /sys/fs/bpf/xdp_block_prog type xdp \
+    pinmaps /sys/fs/bpf; then
+    echo "✅ XDP program loaded and maps pinned."
+else
+    echo "⚠️  WARNING: Failed to load XDP program. Mitigation features will be unavailable."
+fi
+
+# 3.2. Attach to TC Egress (ALL Interfaces)
 echo "Attaching to TC on all eth+ interfaces..."
 
 # Loop through all ethernet interfaces
@@ -66,6 +82,27 @@ for iface_path in /sys/class/net/eth*; do
         echo "    ✅ Attached to $iface"
     else
         echo "    ❌ ERROR: Failed to attach to $iface"
+    fi
+done
+
+
+# Attach XDP on all eth+ interfaces (INGRESS protection)
+echo "Attaching XDP on all eth+ interfaces..."
+
+for iface_path in /sys/class/net/eth*; do
+    iface=$(basename "$iface_path")
+    echo " -> XDP attach: $iface"
+
+    ip link set dev "$iface" xdp off 2> /dev/null || true
+
+    if [ -e /sys/fs/bpf/xdp_block_prog ]; then
+        if ip link set dev "$iface" xdp pinned /sys/fs/bpf/xdp_block_prog; then
+            echo "    ✅ XDP attached to $iface"
+        else
+            echo "    ⚠️  WARNING: Failed to attach XDP to $iface"
+        fi
+    else
+        echo "    ⚠️  Skipping XDP attach (program not loaded)"
     fi
 done
 

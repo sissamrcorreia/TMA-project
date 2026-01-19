@@ -69,6 +69,7 @@ st.markdown("""
 # Constants
 AGGREGATOR_URL = os.getenv("AGGREGATOR_URL", "http://aggregator:8080")
 CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://host-a:5006")
+POLICY_TOKEN = os.getenv("TMA_POLICY_TOKEN", "")
 
 # --- GLOBAL STATE (Thread-Safe Wrapper) ---
 # --- GLOBAL STATE (Thread-Safe Wrapper) ---
@@ -199,6 +200,30 @@ def control_traffic(action):
     except:
         st.error("Controller Offline")
 
+def _policy_headers():
+    if POLICY_TOKEN:
+        return {"X-TMA-TOKEN": POLICY_TOKEN}
+    return {}
+
+def fetch_policy_status(base_url: str):
+    try:
+        r = requests.get(f"{base_url}/policy/status", timeout=1.5, headers=_policy_headers())
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return {"xdp_ready": False, "error": "unreachable"}
+
+def push_block_rule(base_url: str, ip: str, ttl: int):
+    payload = {"match": "src_ip", "ip": ip, "ttl_seconds": int(ttl), "reason": "manual"}
+    r = requests.post(f"{base_url}/policy/block", json=payload, timeout=2.0, headers=_policy_headers())
+    return r
+
+def push_unblock_rule(base_url: str, ip: str):
+    payload = {"ip": ip}
+    r = requests.post(f"{base_url}/policy/unblock", json=payload, timeout=2.0, headers=_policy_headers())
+    return r
+
 # --- UI RENDER LOOP (Back to while True for No-Scroll-Reset) ---
 
 # 1. SIDEBAR (STATIC)
@@ -215,6 +240,57 @@ with st.sidebar:
     
     # 2. Render Toggle
     target_mode = st.toggle("Enable Heavy Traffic", value=is_attack_active, key="toggle_heavy_traffic")
+
+    st.divider()
+
+    st.markdown("## Mitigation (XDP)")
+    st.caption("Manual blocking via XDP (ingress). Select the victim host, then block an attacker SRC IP.")
+
+    default_hosts = ["host-b", "host-c", "host-d", "host-a"]
+    victim = st.selectbox("Victim host", default_hosts, index=0)
+    victim_url = f"http://{victim}:5006"
+
+    ip_to_block = st.text_input("Block SRC IP", value="", placeholder="e.g. 172.25.10.10")
+    ttl_seconds = st.slider("TTL (seconds)", min_value=5, max_value=300, value=60, step=5)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚫 Block", use_container_width=True):
+            if not ip_to_block.strip():
+                st.warning("Enter an IP to block")
+            else:
+                resp = push_block_rule(victim_url, ip_to_block.strip(), ttl_seconds)
+                if resp.status_code == 200:
+                    st.toast(f"Blocked {ip_to_block.strip()} on {victim} ({ttl_seconds}s)", icon="🚫")
+                else:
+                    st.error(f"Block failed: {resp.status_code} {resp.text}")
+
+    with c2:
+        if st.button("✅ Unblock", use_container_width=True):
+            if not ip_to_block.strip():
+                st.warning("Enter an IP to unblock")
+            else:
+                resp = push_unblock_rule(victim_url, ip_to_block.strip())
+                if resp.status_code == 200:
+                    st.toast(f"Unblocked {ip_to_block.strip()} on {victim}", icon="✅")
+                else:
+                    st.error(f"Unblock failed: {resp.status_code} {resp.text}")
+
+    policy_status = fetch_policy_status(victim_url)
+    if policy_status.get("xdp_ready"):
+        st.success(f"XDP ready on {victim}")
+        st.write("Drops total:", policy_status.get("drops_total", 0))
+        rules = policy_status.get("blocked_rules", [])
+        if rules:
+            st.write("Active rules:")
+            st.table(rules)
+        else:
+            st.caption("No active rules.")
+    else:
+        st.warning(f"XDP not ready: {policy_status.get('error','unknown')}")
+
+    st.caption(f"Policy endpoint: {victim_url}")
+
     
     # 3. Reconcile
     if target_mode != is_attack_active:
