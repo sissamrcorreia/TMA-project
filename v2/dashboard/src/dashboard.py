@@ -73,7 +73,6 @@ CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://host-a:5006")
 POLICY_TOKEN = os.getenv("TMA_POLICY_TOKEN", "")
 
 # --- GLOBAL STATE (Thread-Safe Wrapper) ---
-# --- GLOBAL STATE (Thread-Safe Wrapper) ---
 class GlobalCache:
     """
     Thread-safe storage for real-time metrics received from the WebSocket thread.
@@ -311,20 +310,22 @@ with st.sidebar:
                 else:
                     st.error(f"Unblock failed: {resp.status_code} {resp.text}")
 
-    policy_status = fetch_policy_status(victim_url)
-    if policy_status.get("xdp_ready"):
-        st.success(f"XDP ready on {victim}")
-        st.write("Drops total:", policy_status.get("drops_total", 0))
-        rules = policy_status.get("blocked_rules", [])
-        if rules:
-            st.write("Active rules:")
-            st.table(rules)
-        else:
-            st.caption("No active rules.")
-    else:
-        st.warning(f"XDP not ready: {policy_status.get('error','unknown')}")
+    # --- CAMBIO 1: PLACEHOLDERS DINÁMICOS EN LUGAR DE VISUALIZACIÓN ESTÁTICA ---
+    st.divider()
+    
+    st.markdown("### 🛡️ XDP Live Monitor")
+    
+    # Placeholder para el estado (Ready/Error)
+    ph_xdp_status = st.empty()
+    
+    # Placeholder para las métricas (Drops)
+    ph_xdp_metrics = st.empty()
+    
+    # Placeholder para la tabla de reglas
+    ph_xdp_rules = st.empty()
 
     st.caption(f"Policy endpoint: {victim_url}")
+    # --------------------------------------------------------------------------
 
     
     # 3. Reconcile
@@ -436,6 +437,64 @@ if 'last_mode' not in st.session_state:
 # 5. DYNAMIC LOOP
 while True:
     try:
+        # --- CAMBIO 2: LÓGICA DE ACTUALIZACIÓN XDP DENTRO DEL BUCLE ---
+        # 1. Obtenemos datos frescos del agente (usando victim_url del sidebar)
+        current_policy = fetch_policy_status(victim_url)
+
+        # 2. Renderizamos en los placeholders del Sidebar
+        if current_policy.get("xdp_ready"):
+            ph_xdp_status.success(f"✅ Active on {victim}", icon="🛡️")
+            
+            # Drops
+            drops = current_policy.get("drops_total", 0)
+            
+            # Calculamos delta para ver la velocidad de bloqueo
+            if 'last_drops_val' not in st.session_state:
+                st.session_state.last_drops_val = drops
+            
+            delta_val = drops - st.session_state.last_drops_val
+            st.session_state.last_drops_val = drops
+            
+            # Pintar métrica en el hueco reservado
+            with ph_xdp_metrics.container():
+                st.metric(
+                    "⛔ Packets Dropped", 
+                    f"{drops:,}", 
+                    delta=f"+{delta_val}/s" if delta_val > 0 else None,
+                    delta_color="inverse"
+                )
+
+            # Reglas (Tabla)
+            rules = current_policy.get("blocked_rules", [])
+            with ph_xdp_rules.container():
+                if rules:
+                    # Convertimos a DataFrame para verlo bonito
+                    df_rules = pd.DataFrame(rules)
+                    # Mostramos IP y TTL (que se irá actualizando)
+                    st.dataframe(
+                        df_rules[["ip", "expires_in_s"]],
+                        column_config={
+                            "ip": "Blacklisted IP",
+                            "expires_in_s": st.column_config.ProgressColumn(
+                                "TTL (sec)", 
+                                format="%d s", 
+                                min_value=0, 
+                                max_value=60 # Puedes ajustar esto visualmente o usar ttl_seconds
+                            )
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                else:
+                    st.caption("No active rules.")
+
+        else:
+            ph_xdp_status.warning("XDP Not Ready")
+            ph_xdp_metrics.empty()
+            ph_xdp_rules.empty()
+        # --------------------------------------------------------------
+
+
         # --- PHASE 1: FAST UI UPDATES (Cache-based) ---
         cache = get_cache()
         current_rate = get_current_rate()
