@@ -206,7 +206,8 @@ def policy_status():
 
     try:
         rules = []
-        now_ns = int(time.time() * 1e9)
+        #now_ns = int(time.time() * 1e9)
+        now_ns = time.monotonic_ns()
 
         entries = _bpftool_map_dump_json(BLOCKED_MAP_PATH)
         for e in entries:
@@ -268,7 +269,8 @@ def policy_block():
         _bpftool_map_update_pinned(
             BLOCKED_MAP_PATH,
             _ip_to_key_bytes(ip),
-            _u64_to_le_bytes(1),
+            #_u64_to_le_bytes(1),
+            _u64_to_le_bytes(expiry_ns),
         )
         return jsonify({
             "ok": True,
