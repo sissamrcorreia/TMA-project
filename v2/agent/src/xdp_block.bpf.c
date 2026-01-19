@@ -48,8 +48,11 @@ static __always_inline int parse_ipv4(void *data, void *data_end, __u32 *src_ip,
     if ((void *)(iph + 1) > data_end)
         return 0;
 
-    *src_ip = iph->saddr; // network byte order bits
-    *dst_ip = iph->daddr; // network byte order bits
+    // *src_ip = iph->saddr; // network byte order bits
+    // *dst_ip = iph->daddr; // network byte order bits
+
+    *src_ip = bpf_ntohl(iph->saddr); 
+    *dst_ip = bpf_ntohl(iph->daddr);
     return 1;
 }
 
