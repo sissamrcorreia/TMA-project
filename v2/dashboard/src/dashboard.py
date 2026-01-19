@@ -409,7 +409,6 @@ while True:
         dv_p95 = safe_quantile(dv_vals, 0.95, default=None)
 
         # --- Score (0-100) ---
-        # idea: si densidad alta + spray alto + diversity alto con mbps bajo -> low-and-slow
         score = 0.0
 
         if fd_p95 is not None and flows_per_mbps > fd_p95:
@@ -424,7 +423,7 @@ while True:
         if dv_p95 is not None and diversity_score > dv_p95:
             score += 15.0 * clamp((diversity_score / (dv_p95 + 1e-9)) - 1.0, 0.0, 1.0)
 
-        # si el tráfico es alto, esto ya no es "low-and-slow": atenúa un poco
+        # if the amount of traffic is high, reduce the score impact (bc no low-slow possible)
         if mbps > 200:
             score *= 0.6
 
