@@ -51,5 +51,8 @@ RUN chmod +x /app/src/start.sh
 # We use generic headers. This works for basic types.
 RUN clang -g -O2 -target bpf -I/usr/include/$(uname -m)-linux-gnu -c /app/src/traffic.bpf.c -o /app/src/traffic.bpf.o
 
+# 6. Compile the XDP mitigation program (used for manual blocking via dashboard)
+RUN clang -g -O2 -target bpf -I/usr/include/$(uname -m)-linux-gnu -c /app/src/xdp_block.bpf.c -o /app/src/xdp_block.bpf.o
+
 # Default command: Run the startup script (which loads BPF) and then the controller
 CMD ["/app/src/start.sh"]

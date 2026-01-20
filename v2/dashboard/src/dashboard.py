@@ -70,8 +70,8 @@ st.markdown("""
 # Constants
 AGGREGATOR_URL = os.getenv("AGGREGATOR_URL", "http://aggregator:8080")
 CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://host-a:5006")
+POLICY_TOKEN = os.getenv("TMA_POLICY_TOKEN", "")
 
-# --- GLOBAL STATE (Thread-Safe Wrapper) ---
 # --- GLOBAL STATE (Thread-Safe Wrapper) ---
 class GlobalCache:
     """
@@ -234,6 +234,30 @@ def compute_spray_index(df_trie, topn=20):
     top1_share = float(d['bytes'].iloc[0] / total)
     return 1.0 - top1_share
 
+def _policy_headers():
+    if POLICY_TOKEN:
+        return {"X-TMA-TOKEN": POLICY_TOKEN}
+    return {}
+
+def fetch_policy_status(base_url: str):
+    try:
+        r = requests.get(f"{base_url}/policy/status", timeout=1.5, headers=_policy_headers())
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return {"xdp_ready": False, "error": "unreachable"}
+
+def push_block_rule(base_url: str, ip: str, ttl: int):
+    payload = {"match": "src_ip", "ip": ip, "ttl_seconds": int(ttl), "reason": "manual"}
+    r = requests.post(f"{base_url}/policy/block", json=payload, timeout=2.0, headers=_policy_headers())
+    return r
+
+def push_unblock_rule(base_url: str, ip: str):
+    payload = {"ip": ip}
+    r = requests.post(f"{base_url}/policy/unblock", json=payload, timeout=2.0, headers=_policy_headers())
+    return r
+
 # --- UI RENDER LOOP (Back to while True for No-Scroll-Reset) ---
 
 # 1. SIDEBAR (STATIC)
@@ -250,6 +274,59 @@ with st.sidebar:
     
     # 2. Render Toggle
     target_mode = st.toggle("Enable Heavy Traffic", value=is_attack_active, key="toggle_heavy_traffic")
+
+    st.divider()
+
+    st.markdown("## Mitigation (XDP)")
+    st.caption("Manual blocking via XDP (ingress). Select the victim host, then block an attacker SRC IP.")
+
+    default_hosts = ["host-b", "host-c", "host-d", "host-a"]
+    victim = st.selectbox("Victim host", default_hosts, index=0)
+    victim_url = f"http://{victim}:5006"
+
+    ip_to_block = st.text_input("Block SRC IP", value="", placeholder="e.g. 172.25.10.10")
+    ttl_seconds = st.slider("TTL (seconds)", min_value=5, max_value=300, value=60, step=5)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚫 Block", use_container_width=True):
+            if not ip_to_block.strip():
+                st.warning("Enter an IP to block")
+            else:
+                resp = push_block_rule(victim_url, ip_to_block.strip(), ttl_seconds)
+                if resp.status_code == 200:
+                    st.toast(f"Blocked {ip_to_block.strip()} on {victim} ({ttl_seconds}s)", icon="🚫")
+                else:
+                    st.error(f"Block failed: {resp.status_code} {resp.text}")
+
+    with c2:
+        if st.button("✅ Unblock", use_container_width=True):
+            if not ip_to_block.strip():
+                st.warning("Enter an IP to unblock")
+            else:
+                resp = push_unblock_rule(victim_url, ip_to_block.strip())
+                if resp.status_code == 200:
+                    st.toast(f"Unblocked {ip_to_block.strip()} on {victim}", icon="✅")
+                else:
+                    st.error(f"Unblock failed: {resp.status_code} {resp.text}")
+
+    # --- CAMBIO 1: PLACEHOLDERS DINÁMICOS EN LUGAR DE VISUALIZACIÓN ESTÁTICA ---
+    st.divider()
+    
+    st.markdown("### 🛡️ XDP Live Monitor")
+    
+    # Placeholder para el estado (Ready/Error)
+    ph_xdp_status = st.empty()
+    
+    # Placeholder para las métricas (Drops)
+    ph_xdp_metrics = st.empty()
+    
+    # Placeholder para la tabla de reglas
+    ph_xdp_rules = st.empty()
+
+    st.caption(f"Policy endpoint: {victim_url}")
+    # --------------------------------------------------------------------------
+
     
     # 3. Reconcile
     if target_mode != is_attack_active:
@@ -360,6 +437,64 @@ if 'last_mode' not in st.session_state:
 # 5. DYNAMIC LOOP
 while True:
     try:
+        # --- CAMBIO 2: LÓGICA DE ACTUALIZACIÓN XDP DENTRO DEL BUCLE ---
+        # 1. Obtenemos datos frescos del agente (usando victim_url del sidebar)
+        current_policy = fetch_policy_status(victim_url)
+
+        # 2. Renderizamos en los placeholders del Sidebar
+        if current_policy.get("xdp_ready"):
+            ph_xdp_status.success(f"✅ Active on {victim}", icon="🛡️")
+            
+            # Drops
+            drops = current_policy.get("drops_total", 0)
+            
+            # Calculamos delta para ver la velocidad de bloqueo
+            if 'last_drops_val' not in st.session_state:
+                st.session_state.last_drops_val = drops
+            
+            delta_val = drops - st.session_state.last_drops_val
+            st.session_state.last_drops_val = drops
+            
+            # Pintar métrica en el hueco reservado
+            with ph_xdp_metrics.container():
+                st.metric(
+                    "⛔ Packets Dropped", 
+                    f"{drops:,}", 
+                    delta=f"+{delta_val}/s" if delta_val > 0 else None,
+                    delta_color="inverse"
+                )
+
+            # Reglas (Tabla)
+            rules = current_policy.get("blocked_rules", [])
+            with ph_xdp_rules.container():
+                if rules:
+                    # Convertimos a DataFrame para verlo bonito
+                    df_rules = pd.DataFrame(rules)
+                    # Mostramos IP y TTL (que se irá actualizando)
+                    st.dataframe(
+                        df_rules[["ip", "expires_in_s"]],
+                        column_config={
+                            "ip": "Blacklisted IP",
+                            "expires_in_s": st.column_config.ProgressColumn(
+                                "TTL (sec)", 
+                                format="%d s", 
+                                min_value=0, 
+                                max_value=60 # Puedes ajustar esto visualmente o usar ttl_seconds
+                            )
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                else:
+                    st.caption("No active rules.")
+
+        else:
+            ph_xdp_status.warning("XDP Not Ready")
+            ph_xdp_metrics.empty()
+            ph_xdp_rules.empty()
+        # --------------------------------------------------------------
+
+
         # --- PHASE 1: FAST UI UPDATES (Cache-based) ---
         cache = get_cache()
         current_rate = get_current_rate()
